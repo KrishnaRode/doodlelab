@@ -1,0 +1,12 @@
+node_modules/
+.next/
+.next-verify/
+out/
+*.tsbuildinfo
+next-env.d.ts
+playwright-report/
+test-results/
+.DS_Store
+.env*.local
+.doodlelab-run/
+.e2e-shots/
