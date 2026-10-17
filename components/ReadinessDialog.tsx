@@ -149,6 +149,10 @@ export function ReadinessDialog() {
             </select>
           </label>
         </div>
+        <label className="mt-2 flex items-center gap-2 text-xs text-text-muted">
+          <input type="checkbox" checked={settings.useVision} onChange={(e) => useLab.getState().setSettings({ useVision: e.target.checked })} data-testid="use-vision" />
+          Ask the vision model to double-check recognised photo shapes (one small crop per shape, ≈1 s each). It never changes geometry.
+        </label>
         {cloud.length > 0 && <p className="mt-2 text-[11px] text-text-faint">Ignored cloud models (DoodleLab only uses local models): {cloud.map((m) => m.name).join(", ")}</p>}
         <div className="mt-3 rounded-xl bg-panel p-3 text-xs leading-relaxed text-text-muted">
           <b className="text-text">Setup.</b> Models load on demand and are only used for the copilot&apos;s broader requests, explanations and optional photo hints — never for drawing recognition or physics.

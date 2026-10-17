@@ -1,9 +1,17 @@
 import { test, expect } from "@playwright/test";
 import path from "node:path";
+import type { Page } from "@playwright/test";
 import { freshPage, hook } from "./helpers";
 
-test("upload recognition: synthetic paper photo → reviewed shapes → real physics", async ({ page }) => {
+/** These tests check the deterministic geometry path, so the optional vision model is switched off. */
+async function geometryOnly(page: Page) {
   await freshPage(page);
+  await page.evaluate(() => localStorage.setItem("doodlelab.v1.settings", JSON.stringify({ useVision: false })));
+  await page.reload();
+}
+
+test("upload recognition: synthetic paper photo → reviewed shapes → real physics", async ({ page }) => {
+  await geometryOnly(page);
   await page.getByRole("button", { name: "Photo", exact: true }).click();
   await page.getByTestId("upload-input").setInputFiles(path.join(__dirname, "../../public/fixtures/paper-ramp-ball.jpg"));
   await expect(page.getByTestId("recognize")).toBeVisible();
@@ -32,7 +40,7 @@ for (const f of ["paper-bullseye", "paper-dominoes"]) {
   test(`fixture ${f} recognises its expected shapes`, async ({ page }) => {
     const manifest = (await import("../../public/fixtures/fixtures.json", { with: { type: "json" } })).default as unknown as { fixtures: Array<{ id: string; expect: Record<string, number> }> };
     const exp = manifest.fixtures.find((x) => x.id === f)!.expect;
-    await freshPage(page);
+    await geometryOnly(page);
     await page.getByRole("button", { name: "Photo", exact: true }).click();
     await page.getByTestId(`fixture-${f}`).click();
     await page.getByTestId("recognize").click();

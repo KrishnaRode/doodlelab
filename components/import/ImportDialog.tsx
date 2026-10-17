@@ -23,6 +23,8 @@ import { makeObject, nextId } from "@/lib/scene/objects";
 import { emptyScene, ROLES, type Role, type SceneObject, type SceneSpec } from "@/lib/scene/spec";
 import { ROLE_DEFAULTS } from "@/lib/scene/materials";
 import { useElapsed } from "../tray/ExplainPanel";
+import { compareHint, type HintVerdict } from "@/lib/vision/hints";
+import type { Mark } from "@/lib/ai/prompts";
 
 type Step = "source" | "adjust" | "recognize" | "review";
 type StageKey = "rectify" | "ink" | "shapes" | "vision";
@@ -55,9 +57,9 @@ interface Review {
   rectUrl: string;
   world: { width: number; height: number };
   choices: Record<string, { include: boolean; role: Role }>;
-  hints: Record<string, { role: string; note?: string }>;
+  hints: Record<string, { mark: Mark; verdict: HintVerdict; ms: number }>;
   visionModel: string | null;
-  visionMissed: string[];
+  visionSkipped: string[];
 }
 
 const MAX_SRC = 1600;
@@ -226,27 +228,30 @@ export function ImportDialog() {
       const rectUrl = rgbaToJpegUrl(rect);
       const choices: Review["choices"] = {};
       for (const c of result.candidates) choices[c.id] = { include: !c.ignored && !!c.fit.role, role: (c.fit.role ?? "block") as Role };
-      const base: Review = { result, H, rect, rectUrl, world, choices, hints: {}, visionModel, visionMissed: [] };
+      const base: Review = { result, H, rect, rectUrl, world, choices, hints: {}, visionModel, visionSkipped: [] };
       setReview(base);
-      if (visionModel) {
-        upd("vision", { status: "running" });
+      const kept = result.candidates.filter((c) => !c.ignored && c.fit.shape).slice(0, 24);
+      if (visionModel && kept.length) {
+        upd("vision", { status: "running", label: `Asking ${visionModel} about ${kept.length} shape${kept.length === 1 ? "" : "s"} (one crop each, optional)` });
         const vt = performance.now();
-        const cands = result.candidates
-          .filter((c) => !c.ignored)
-          .map((c) => ({ id: c.id, kind: c.fit.kind, bbox: [c.bboxPx[0] / rect.width, c.bboxPx[1] / rect.height, c.bboxPx[2] / rect.width, c.bboxPx[3] / rect.height] as [number, number, number, number] }));
+        const crops = kept.map((c) => ({ id: c.id, image: cropJpeg(rect, c.bboxPx) }));
         try {
           const res = await fetch("/api/ai/vision", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ image: rgbaToJpegUrl(rect, 768).split(",")[1], candidates: cands, model: visionModel }),
+            body: JSON.stringify({ crops, model: visionModel }),
             signal: ctrl.signal,
           });
-          const j = (await res.json()) as { ok: boolean; hints?: Array<{ id: string; role: string; note?: string }>; missed?: string[]; message?: string };
+          const j = (await res.json()) as { ok: boolean; hints?: Array<{ id: string; mark: Mark; ms: number }>; skipped?: string[]; message?: string };
           if (!j.ok) throw new Error(j.message ?? "vision request failed");
           const hints: Review["hints"] = {};
-          for (const h of j.hints ?? []) hints[h.id] = { role: h.role, note: h.note };
-          setReview({ ...base, hints, visionMissed: j.missed ?? [] });
-          upd("vision", { status: "done", ms: Math.round(performance.now() - vt), detail: `${Object.keys(hints).length} role hint(s). Hints never change geometry.` });
+          for (const h of j.hints ?? []) {
+            const c = kept.find((k) => k.id === h.id);
+            if (c) hints[h.id] = { mark: h.mark, ms: h.ms, verdict: compareHint(c.fit.kind, c.fit.metrics.aspect, c.fit.role, h.mark) };
+          }
+          setReview({ ...base, hints, visionSkipped: j.skipped ?? [] });
+          const disagree = Object.values(hints).filter((h) => !h.verdict.agrees).length;
+          upd("vision", { status: "done", ms: Math.round(performance.now() - vt), detail: `${Object.keys(hints).length} answered, ${disagree} to double-check${j.skipped?.length ? `, ${j.skipped.length} unanswered` : ""}. Hints never change geometry.` });
         } catch (e) {
           if (ctrl.signal.aborted) upd("vision", { status: "cancelled", detail: "Cancelled — geometry results kept." });
           else upd("vision", { status: "error", ms: Math.round(performance.now() - vt), detail: `${e instanceof Error ? e.message : String(e)} — geometry results kept.` });
@@ -296,9 +301,8 @@ export function ImportDialog() {
       const hint = review.hints[c.id];
       let aiHint: string | undefined;
       if (hint) {
-        if (hint.role === "not-a-shape") reasons.push("Vision model thinks this is not a shape (text or scribble).");
-        else if (hint.role !== ch.role) reasons.push(`Vision model suggests “${hint.role}”; geometry says “${ch.role}”.`);
-        aiHint = `${hint.role}${hint.note ? ` — ${hint.note}` : ""}`.slice(0, 200);
+        if (!hint.verdict.agrees && !(hint.verdict.suggestion && hint.verdict.suggestion === ch.role)) reasons.push(hint.verdict.reason);
+        aiHint = `${review.visionModel}: ${hint.mark}`.slice(0, 200);
       }
       // A role the user explicitly chose in this dialog counts as reviewed.
       const userChose = ch.role !== c.fit.role;
@@ -610,7 +614,7 @@ function ReviewPane({ review, setReview, loaded, quad, stages }: { review: Revie
             </span>
           ))}
         </div>
-        {review.visionMissed.length > 0 && <p className="text-[11px] text-text-muted">Vision model also mentioned: {review.visionMissed.join("; ")} (not added automatically).</p>}
+        {review.visionSkipped.length > 0 && <p className="text-[11px] text-text-muted">The vision model gave no usable answer for: {review.visionSkipped.join(", ")} (geometry kept).</p>}
         <p className="text-[11px] text-text-faint">
           Threshold {review.result.threshold}, ink {(review.result.inkFraction * 100).toFixed(1)}%. Shapes map to a {review.world.width} × {review.world.height} u world (paper aspect preserved). Fit numbers are measured deviations, not confidence scores.
         </p>
@@ -647,9 +651,18 @@ function ReviewPane({ review, setReview, loaded, quad, stages }: { review: Revie
                     <li key={`n${i}`}>{n}</li>
                   ))}
                   {hint && (
-                    <li>
-                      Vision model ({review.visionModel}): {hint.role === ch.role ? "agrees" : `suggests “${hint.role}”`}
-                      {hint.note ? ` — ${hint.note}` : ""}
+                    <li className={hint.verdict.agrees ? "" : "text-warn"} data-testid="vision-hint" data-agrees={hint.verdict.agrees}>
+                      {hint.verdict.reason}
+                      {hint.verdict.suggestion && hint.verdict.suggestion !== ch.role && (
+                        <button className="ml-1.5 rounded border border-border px-1.5 text-[10px] text-text hover:bg-panel-hover" onClick={() => set(c.id, { role: hint.verdict.suggestion!, include: true })}>
+                          Use {ROLE_DEFAULTS[hint.verdict.suggestion].label}
+                        </button>
+                      )}
+                      {hint.mark === "text-or-scribble" && ch.include && (
+                        <button className="ml-1.5 rounded border border-border px-1.5 text-[10px] text-text hover:bg-panel-hover" onClick={() => set(c.id, { include: false })}>
+                          Leave out
+                        </button>
+                      )}
                     </li>
                   )}
                 </ul>
@@ -671,6 +684,30 @@ function insetQuad(q: Quad, f: number): Quad {
 
 function clampN(v: number, lo: number, hi: number) {
   return Math.round(Math.min(hi, Math.max(lo, v)) * 100) / 100;
+}
+
+/** A 336 px square crop of one shape on a paper-coloured background (base64 JPEG, no prefix). */
+function cropJpeg(img: RGBAImage, bb: [number, number, number, number]): string {
+  const c = document.createElement("canvas");
+  c.width = img.width;
+  c.height = img.height;
+  c.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), 0, 0);
+  const pad = 16;
+  const x0 = Math.max(0, bb[0] - pad),
+    y0 = Math.max(0, bb[1] - pad),
+    x1 = Math.min(img.width, bb[2] + pad),
+    y1 = Math.min(img.height, bb[3] + pad);
+  const side = Math.max(x1 - x0, y1 - y0, 1);
+  const e = document.createElement("canvas");
+  e.width = e.height = 336;
+  const x = e.getContext("2d")!;
+  x.fillStyle = "#f4efe2";
+  x.fillRect(0, 0, 336, 336);
+  const s = 300 / side;
+  const w = (x1 - x0) * s,
+    h = (y1 - y0) * s;
+  x.drawImage(c, x0, y0, x1 - x0, y1 - y0, 168 - w / 2, 168 - h / 2, w, h);
+  return e.toDataURL("image/jpeg", 0.9).split(",")[1]!;
 }
 
 function rgbaToJpegUrl(img: RGBAImage, maxSide = 0): string {

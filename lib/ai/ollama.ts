@@ -165,6 +165,8 @@ export interface ChatJsonOptions<T> {
   signal?: AbortSignal;
   temperature?: number;
   numPredict?: number;
+  /** How long Ollama keeps the model loaded afterwards. */
+  keepAlive?: string;
 }
 
 /** One structured chat call; validates the output against `schema`. One retry on bad JSON. */
@@ -180,7 +182,7 @@ export async function chatJson<T>(opts: ChatJsonOptions<T>): Promise<{ data: T; 
       stream: false,
       think: false,
       format: jsonSchema,
-      keep_alive: "10m",
+      keep_alive: opts.keepAlive ?? "10m",
       options: { temperature: opts.temperature ?? 0.2, num_ctx: 6144, num_predict: opts.numPredict ?? 700 },
       messages: [
         { role: "system", content: opts.system },

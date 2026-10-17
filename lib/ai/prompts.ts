@@ -94,30 +94,20 @@ export function explainUserPrompt(question: string, facts: Fact[]): string {
   return `Question: "${question}"\n\nFACTS:\n${facts.map((f) => `${f.id} [${f.kind}] ${f.text}`).join("\n")}\n\nReturn JSON with child, deeper and reasons.`;
 }
 
-// ── 3. Vision role hints ─────────────────────────────────────────────────────
+// ── 3. Vision hints (one small crop per shape) ───────────────────────────────
+//
+// Measured on the build machine with qwen2.5vl:3b: asking for roles on the whole sheet gave
+// ~10/16 agreement and it could not tie IDs to shapes; line ORIENTATION was unreliable even per
+// crop. So the model is only asked for a coarse mark class per crop — what geometry cannot know
+// (is this a scribble? a bullseye?). Roles and geometry always come from code.
 
-export const AiVisionOutput = z.object({
-  shapes: z
-    .array(
-      z.object({
-        id: z.string().max(12),
-        role: z.enum(["ball", "block", "ramp", "ground", "platform", "wall", "target", "domino", "not-a-shape"]),
-        note: z.string().max(160).optional(),
-      }),
-    )
-    .max(40),
-  missed: z.array(z.string().max(160)).max(6).optional(),
-});
-export type AiVisionOutput = z.infer<typeof AiVisionOutput>;
+export const MARKS = ["round-shape", "bullseye-rings", "box-or-rectangle", "straight-line", "text-or-scribble"] as const;
+export type Mark = (typeof MARKS)[number];
 
-export const VISION_SYSTEM = `You look at a photo of a simple hand-drawn physics sketch on paper.
-Numbered boxes were already found by geometry code. For each numbered shape, say what it most likely represents.
-Roles: ball (circle), block (box), ramp (sloped line), ground (long bottom line), platform (flat line or shelf), wall (vertical line), target (a goal mark, star, X or bullseye), domino (tall thin box), not-a-shape (text, scribble, shadow).
-Do not describe geometry or give numbers. Return ONLY JSON.`;
+export const AiMarkOutput = z.object({ shape: z.enum(MARKS) });
 
-export function visionUserPrompt(cands: Array<{ id: string; kind: string; bbox: [number, number, number, number] }>): string {
-  const list = cands
-    .map((c) => `${c.id}: geometry says "${c.kind}", box from (${c.bbox[0].toFixed(2)}, ${c.bbox[1].toFixed(2)}) to (${c.bbox[2].toFixed(2)}, ${c.bbox[3].toFixed(2)}) as fractions of the image (0,0 = top-left).`)
-    .join("\n");
-  return `Shapes found:\n${list}\n\nList each shape id with its most likely role. Mention anything important the geometry missed in "missed".`;
+export const VISION_SYSTEM = "You classify ONE hand-drawn pencil mark shown in a small image. Answer with the single best label. Return only JSON.";
+
+export function visionUserPrompt(): string {
+  return `Which label fits this mark best: ${MARKS.join(", ")}?`;
 }

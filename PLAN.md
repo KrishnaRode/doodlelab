@@ -70,4 +70,4 @@ Verification
 
 
 Status (2026-10-17): every box above is implemented and covered by tests — see README → Validation results.
-Not validated: a real local vision model end-to-end (none installed) and real phone photos (fixtures are synthetic).
+Vision double-check validated with qwen2.5vl:3b (15/16 agreement on synthetic fixtures). Not validated: real phone photos.

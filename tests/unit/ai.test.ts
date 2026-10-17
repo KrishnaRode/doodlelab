@@ -156,21 +156,29 @@ describe("AI routes validate everything the model says", () => {
 });
 
 describe("vision route", () => {
-  const img = "A".repeat(200);
+  const crop = (id: string) => ({ id, image: "A".repeat(200) });
   it("refuses models without the vision capability, and cloud models", async () => {
-    const r1 = await visionRoute(new Request("http://x", { method: "POST", body: JSON.stringify({ image: img, candidates: [], model: "qwen3:4b" }) }));
+    const r1 = await visionRoute(new Request("http://x", { method: "POST", body: JSON.stringify({ crops: [crop("s1")], model: "qwen3:4b" }) }));
     expect(r1.status).toBe(409);
     expect(((await r1.json()) as { message: string }).message).toMatch(/no vision capability/);
-    const r2 = await visionRoute(new Request("http://x", { method: "POST", body: JSON.stringify({ image: img, candidates: [], model: "gpt-oss:120b-cloud" }) }));
+    const r2 = await visionRoute(new Request("http://x", { method: "POST", body: JSON.stringify({ crops: [crop("s1")], model: "gpt-oss:120b-cloud" }) }));
     expect(r2.status).toBe(409);
   });
-  it("returns only hints for candidate IDs it was given (roles only, never geometry)", async () => {
+  it("asks once per crop and returns only coarse marks (never geometry or roles)", async () => {
     mode = "ok";
-    reply = JSON.stringify({ shapes: [{ id: "s1", role: "ball" }, { id: "s99", role: "ramp" }], missed: ["a cat"] });
-    const r = await visionRoute(new Request("http://x", { method: "POST", body: JSON.stringify({ image: img, candidates: [{ id: "s1", kind: "circle", bbox: [0.1, 0.1, 0.2, 0.2] }], model: "qwen2.5vl:3b" }) }));
-    const j = (await r.json()) as { hints: Array<{ id: string }>; missed: string[] };
-    expect(j.hints.map((h) => h.id)).toEqual(["s1"]);
-    expect(j.missed).toEqual(["a cat"]);
+    reply = JSON.stringify({ shape: "round-shape" });
+    const r = await visionRoute(new Request("http://x", { method: "POST", body: JSON.stringify({ crops: [crop("s1"), crop("s2")], model: "qwen2.5vl:3b" }) }));
+    const j = (await r.json()) as { hints: Array<{ id: string; mark: string }>; skipped: string[] };
+    expect(j.hints.map((h) => [h.id, h.mark])).toEqual([["s1", "round-shape"], ["s2", "round-shape"]]);
+    expect(j.skipped).toEqual([]);
+  });
+  it("an unusable answer for one crop is skipped, not fatal", async () => {
+    mode = "wrong-shape";
+    const r = await visionRoute(new Request("http://x", { method: "POST", body: JSON.stringify({ crops: [crop("s1")], model: "qwen2.5vl:3b" }) }));
+    const j = (await r.json()) as { ok: boolean; hints: unknown[]; skipped: string[] };
+    expect(j.ok).toBe(true);
+    expect(j.hints).toEqual([]);
+    expect(j.skipped).toEqual(["s1"]);
   });
 });
 

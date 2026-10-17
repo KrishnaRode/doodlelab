@@ -16,7 +16,7 @@ machine; a local Ollama model only helps with explanations and edit proposals.
 
 [![Local AI](https://img.shields.io/badge/AI-100%25%20local%20(Ollama)-00a07d?style=flat-square)](#local-ai-and-what-it-is-allowed-to-do)
 [![Physics](https://img.shields.io/badge/physics-Matter.js%20fixed%20step-0071e3?style=flat-square)](#physics)
-[![Tests](https://img.shields.io/badge/tests-95%20unit%20%C2%B7%2015%20browser-1fa95b?style=flat-square)](#validation-results)
+[![Tests](https://img.shields.io/badge/tests-99%20unit%20%C2%B7%2016%20browser-1fa95b?style=flat-square)](#validation-results)
 [![Stack](https://img.shields.io/badge/Next.js%2016%20%C2%B7%20React%2019%20%C2%B7%20TypeScript-1d1d1f?style=flat-square)](#architecture)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)](LICENSE)
 
@@ -172,7 +172,7 @@ Four layers, kept strictly apart:
 | Physics, telemetry, target search | deterministic | no model ever |
 | Copilot edits | **rules first** (instant), local LLM only for the rest | output = allowlisted `ScenePatch` ops on exact IDs, schema-validated, re-validated against the *current* scene, shown as before/after, needs **Apply**, undoable; stale proposals are refused |
 | Explanations | facts from telemetry → rule-based summary always; LLM optional | LLM sees only numbered facts, must cite them; sentences with numbers that weren't measured are removed and reported; labelled "Local AI" vs "Rule-based summary (no AI model)" |
-| Photo role hints | optional local vision model | may only suggest roles for already-found shapes; never geometry; disagreements become *Needs review* |
+| Photo double-check | optional local vision model, **one small crop per found shape** | answers only a coarse class (round / rings / box / line / text-or-scribble); a deterministic rule compares it with the geometry; disagreements become *Needs review* with a one-click suggestion — never geometry, never silent role changes |
 
 The AI never writes or runs code, never touches the simulation loop and never reports measurements.
 Requests are bounded (45–90 s), cancellable, and the physics keeps running while they think.
@@ -184,7 +184,8 @@ are flagged and never auto-selected; `qwen3` thinking models get `think:false` +
 Upload a PNG/JPEG or capture from this computer's camera → drag four corners onto the paper (placed
 automatically when the paper stands out from the table) → **Recognise**. Stages are real and timed:
 perspective correction → ink threshold (lighting-flattened Otsu) → connected components + outer contours →
-**the same stroke fitter as freehand drawing**. Concentric rings become a target; marks along the photo edge
+**the same stroke fitter as freehand drawing** → optional vision double-check (one crop per shape, coarse class
+only). Concentric rings become a target; marks along the photo edge
 and specks are left out with a stated reason. Results are overlaid on the **original** photo for alignment,
 stay editable, and are never hard-coded.
 
@@ -260,18 +261,19 @@ locally. After installation DoodleLab works with the network off (AI features ne
 ## Validation results
 
 Measured on the target machine: **MacBook Air M4, 24 GB, macOS 15.5**, Node 25.9, Ollama 0.24.0,
-`qwen3:4b`, Chromium (Playwright headless shell 1243).
+`qwen3:4b` + `qwen2.5vl:3b`, Chromium (Playwright headless shell 1243).
 
 | Check | Result |
 | --- | --- |
 | `npm run typecheck` / `npm run lint` | clean |
 | `npm run build` (Next.js 16.4, production) | ✓ |
-| Unit tests (`npm test`, Vitest) | **95 passed** — SceneSpec/ScenePatch validation, transforms (normalized↔world↔screen, homography, photo↔rectified), reset restoring state, listener/engine disposal, determinism, speed independence, isolated comparison worlds, gravity presets + Moon/Earth fall-time ratio, mass independence, target sensors, tunnelling, collision honesty, stroke fitting, image pipeline (incl. perspective + auto paper detection), bad model JSON / timeout / cancellation / missing model / Ollama offline, stale AI responses, grounding check, copilot vocabulary, target search, save/load round trips |
-| Browser tests (Playwright) | **15 passed** (14 in `npm run test:e2e` + 1 booting through `./run.sh`) — draw → review → play → pause → step → reset; domino chain; Earth vs Moon compare; copilot apply + undo; target search → apply → reaches target; missing Ollama + missing model; photo upload → review → physics; both other fixtures; replay; 30-body performance; **real `qwen3:4b`** proposal + grounded explanation; boot via `./run.sh` |
+| Unit tests (`npm test`, Vitest) | **99 passed** — SceneSpec/ScenePatch validation, transforms (normalized↔world↔screen, homography, photo↔rectified), reset restoring state, listener/engine disposal, determinism, speed independence, isolated comparison worlds, gravity presets + Moon/Earth fall-time ratio, mass independence, target sensors, tunnelling, collision honesty, stroke fitting, image pipeline (incl. perspective + auto paper detection), bad model JSON / timeout / cancellation / missing model / Ollama offline, stale AI responses, grounding check, copilot vocabulary, target search, save/load round trips |
+| Browser tests (Playwright) | **16 passed** (15 in `npm run test:e2e` + 1 booting through `./run.sh`) — draw → review → play → pause → step → reset; domino chain; Earth vs Moon compare; copilot apply + undo; target search → apply → reaches target; missing Ollama + missing model; photo upload → review → physics; both other fixtures; replay; 30-body performance; **real `qwen3:4b`** proposal + grounded explanation; **real `qwen2.5vl:3b`** photo double-check; boot via `./run.sh` |
 | Physics cost, 30 moving bodies | **0.047 ms** per fixed step (budget 8.3 ms) |
 | Browser, 30 moving bodies at 1280×800 | **60.3 fps** average, worst frame 16.8 ms |
 | Photo pipeline, per fixture (Node) | 40–55 ms total; paper corners auto-found within ≈5 px; all expected shapes found in all 3 fixtures |
 | Local AI (`qwen3:4b`, single runs) | edit proposals 2.1–7.8 s; grounded explanation 19.3 s |
+| Vision double-check (`qwen2.5vl:3b`, 3 synthetic fixtures) | **15/16 agree** with geometry; the 1 disagreement is correct (it flags the scribble geometry called a box). ≈1.1–1.3 s per crop warm; 5.6–9.1 s per photo incl. model load. |
 
 Run them yourself:
 
@@ -296,9 +298,9 @@ E2E needs a Playwright Chromium (`npx playwright install chromium`, one-time dow
 - **Recognition:** circles, boxes and straight lines only; no arbitrary polygons or concave shapes. Each
   freehand stroke is fitted on its own (a box drawn as two strokes becomes two lines). In photos, touching
   shapes merge into one blob and need manual correction; text and scribbles are left for review, not read.
-- **Vision model:** **no vision-capable model is installed on the build machine** (only `qwen3:4b`), so the
-  optional VLM role-hint step was validated for transport, capability checks and error handling with a fake
-  Ollama — **not** end-to-end with a real vision model.
+- **Vision model:** validated end to end with `qwen2.5vl:3b` on the three *synthetic* fixtures only. A 3B model
+  could not reliably map IDs to shapes on the whole sheet or judge line orientation, so it is used per crop for
+  coarse classes only (see below). Thin boxes (dominoes) look like lines to it; that is treated as compatible.
 - **Fixtures are synthetic**, not phone photos. Real-photo accuracy (glare, lined paper, pencil vs marker)
   is unmeasured.
 - **Physics:** rigid 2D bodies only; no rolling resistance model beyond friction/air drag; Matter.js has no
@@ -310,7 +312,7 @@ E2E needs a Playwright Chromium (`npx playwright install chromium`, one-time dow
 ## Remaining gaps
 
 - Validate photo recognition on real phone photos of paper drawings (add them to `public/fixtures`).
-- Validate the vision hint step with a real local vision model (`ollama pull qwen2.5vl:3b`).
+- Measure the vision double-check on real photos (so far: 16 shapes on synthetic fixtures).
 - Test on Safari/Firefox and on a touch device.
 
 ## Deliberately deferred
